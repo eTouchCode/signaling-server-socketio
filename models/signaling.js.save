@@ -1,0 +1,554 @@
+/**
+ * Signaling server unit
+
+ *
+ * @author Daniil Makeev / daniil-makeev@yandex.ru
+ * @package Signaling
+ */
+
+var config = require('getconfig');
+var fs = require('fs');
+var Server = require('../server.js');
+var Log = require('./log.js');
+var User = require('./user.js');
+var Stream = require('./stream.js');
+var Result = require('./result.js');
+
+class Signaling {
+    serviceFunction() {
+        let self = this;
+        setInterval(() => {
+            self.streamsList();
+        }, 5000);
+    }
+
+    init(socket) {
+        let self = this;
+        // Get current user for socket
+        Log.message('signaling.js init() ', '', socket.handshake.query.mappingId, '', 'debugLog');
+        Log.message('signaling.js init() ','',socket.id, '', 'sessions');
+        new User().create(socket, currentUser => {
+            // Catch all requests
+            socket.use((packet, next) => {
+                // Load actual user
+                currentUser.load((err, caller) => {
+                    // Get command from request
+                    var command = self.getCommand(packet, currentUser);
+                    if (!command) {
+                        return true;
+                    }
+                    // You can add any authentication check here
+                    //if (currentUser.authorized || command == 'user/login' || command == 'alive') {
+                    self.processCommand(currentUser, command, packet, socket);
+                    //} else {
+                    //    Result.emit(socket, 'errorMessage', 403, {'message': 'Forbidden'});
+                    //}
+                });
+            });
+
+            // Disconnect handler
+            socket.on('disconnect', () => {
+                var dirPath = config.logging.dir + config.logging.stats.dir + currentUser.mappingId+"/";
+                Log.message('User disconnected succesfully mappingId: ', '', currentUser.mappingId, '', 'debugLog');
+                Log.message('User disconnected succesfully ','',socket.id, '', 'sessions');
+                currentUser.onDisconnect();
+                Log.readAllFilesFromDirectory(dirPath,currentUser.mappingId);
+            });
+            
+            // User is connected and server is ready to receive commands
+            Log.message('signaling.js init User connected successfully and server is ready to receive commands', socket.handshake.address, currentUser.mappingId, '', 'debugLog');
+            Log.message('signaling.js init User connected successfully and server is ready to receive commands ','',socket.id, '', 'sessions');
+            Result.emit(socket, '/v1/ready', 200, { 'message': 'Ok', 'iceServers': Server.server.iceServers });
+        });
+    }
+
+    /**
+    * Process input command
+    *
+    * @param    currentUser     Object
+    * @param    command         string
+    * @param    packet          array       Input data
+    * @param    socket          string      Actual socket
+    */
+    processCommand(currentUser, command, packet, socket) {
+        var self = this;
+        var mtch;
+
+        // No command — no action
+        if (!command) {
+            return true;
+        }
+        if (command.toString().trim() != "alive" && command.toString().trim() != "stream/stats") {
+            Log.message('signaling.js processCommand command : ' + command + " socketId:" + socket.id, '', currentUser.mappingId, '', 'debugLog');
+            Log.message('signaling.js processCommand command : ' + command + " socketId:" + socket.id,'',socket.id, '', 'sessions');
+        }
+        switch (command) {
+            // User functions
+            case 'user/login':
+                return self.login(currentUser, packet[1], socket);
+            case 'user/logout':
+                return self.logout(currentUser, socket);
+            case 'user/disconnect':
+                return self.disconnect(currentUser, socket);
+            /*            case 'readyToStream':
+            Log.message('signaling.js swicth case : readyToStream id: ' + socket.id, '', currentUser.mappingId, '', 'debugLog');
+                            Log.message('signaling.js 94 readyToStream: ' + socket.id);
+                            return Result.emit(socket, 'message', 200, { 'type': 'init', 'payload': null, 'from': socket.id });
+            
+                        case 'message':
+                            return self.streamStart(currentUser, packet[1]);*/
+           case 'user/screen/control':
+                return self.screenControl(currentUser, packet[1]);
+            // Stream functions
+            case 'stream/start':
+                Log.message('signaling.js swicth case : stream/start id:  ' + socket.id, '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js swicth case : stream/start id:  ' + socket.id,'',socket.id, '', 'sessions');
+                return self.streamStart(currentUser, packet[1]);
+            case 'stream/destroy':
+                return self.streamDestroy(currentUser, packet[1]);
+            case 'stream/join':
+                return self.streamJoin(currentUser, packet[1]);
+            case 'stream/leave':
+                return self.streamLeave(currentUser, packet[1]);
+            case 'sdp/ice':
+                return self.sdp('ice', currentUser, packet[1]);
+
+            // Stream list functions
+            case 'streams/list':
+                return self.streamsList(currentUser);
+            case 'streams/observe':
+                return self.streamsObserve(currentUser);
+            case 'streams/abandon':
+                return self.streamsAbandon(currentUser);
+            case 'stream/stats':
+                return self.streamStats(packet[1]);
+
+            // Service functions
+            case 'alive':
+                return self.alive(currentUser);
+            default:
+                Result.emit(currentUser, '/v1/error', 500, { 'message': 'Unknown command hhhhh' });
+        }
+    }
+
+    /**
+    * User login
+    *
+    * @param    currentUser     Object
+    * @param    data            Array       User data
+    * @param    socket          string      Actual socket
+    */
+    login(currentUser, data, socket) {
+        // Actual command
+        var command = '/v1/user/login';
+        // Generate a result template
+        var result = self.makeResult(data);
+        // Validate input data
+        var valid = self.validate(currentUser, command, data, ['login', 'password']);
+        if (!valid) {
+            return false;
+        }
+        // Authorize user
+        currentUser.login(data, err => {
+            if (err) {
+                // User is not authorized
+                return Result.emit(currentUser, command, 403, { message: 'Incorrect login or passed' });
+            }
+            result.stream = streamObject.id;
+            result.ip = currentUser.ip;
+            return Result.emit(currentUser, command, 200, result);
+            self.streamsList(currentUser);
+        });
+    }
+
+
+    /**
+    * Logout
+    *
+    * @param    currentUser     Object
+    * @param    socket          string      Actual socket
+    */
+    logout(currentUser, socket) {
+        var command = '/v1/user/logout';
+        currentUser.logout(err => {
+            if (err) {
+                result.message = err;
+                return Result.emit(currentUser, command, 500, result);
+            }
+            Log.message('User was logged out', currentUser);
+            return Result.emit(currentUser, command, 200, { 'message': 'Ok' });
+        });
+    }
+
+    /**
+    * Socket was disconnected
+    *
+    * @param    currentUser     Object
+    * @param    socket          string      Actual socket
+    */
+    disconnect(currentUser, socket) {
+        var command = '/v1/user/disconnect';
+        Log.message('signaling.js  disconnect User disconnected manually', currentUser, currentUser.mappingId, '', 'debugLog');
+        Log.message('signaling.js  disconnect User disconnected manually','',socket.id, '', 'sessions');
+        Result.emit(socket, command, 200, { 'message': 'Ok' });
+        currentUser.onDisconnect();
+    }
+
+    /*
+    * Create stream — presenter sends his data and waits for viewer
+    *
+    * @param    currentUser     Object
+    * @param    database        Array       Input data
+    */
+    streamStart(currentUser, data) {
+        var self = this;
+        var command = '/v1/stream/start';
+        var result = self.makeResult(data);
+        var valid = self.validate(currentUser, command, data, ['sdpOffer']);
+        Log.message('signaling.js streamStart ' + currentUser.id + ' ', '', currentUser.mappingId, '', 'debugLog');
+        Log.message('signaling.js streamStart ' + currentUser.id + ' ','',currentUser.id, '', 'sessions');
+        if (!valid) {
+            return false;
+        }
+        // Check if user can stream
+        currentUser.isStreamingPossible(data, (err) => {
+            if (err) {
+                Log.message('signaling.js streamStart error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamStart error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                result.message = err;
+                return Result.emit(currentUser, command, 403, result);
+            }
+            // Start stream
+            new Stream().start(currentUser, data, (err, streamObject) => {
+                result.stream = streamObject.id;
+                result.ip = currentUser.ip;
+                Result.emit(currentUser, command, 200, result);
+                Log.message('signaling.js streamStart command : ' + JSON.stringify(command), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamStart command : ' + JSON.stringify(command),'',currentUser.id, '', 'sessions');
+                // Notify all authorized users
+                self.streamsList(currentUser);
+            });
+        });
+    }
+
+    /*
+    * Destroy stream
+    *
+    * @param    currentUser     Object
+    * @param    database        array       Input data
+    */
+    streamDestroy(currentUser, data) {
+        var self = this;
+        var command = '/v1/stream/destroy';
+        var result = self.makeResult(data);
+        var valid = self.validate(currentUser, command, data, ['stream']);
+        Log.message('signaling.js streamDestroy id: ' + currentUser.id + ' ', '', currentUser.mappingId, '', 'debugLog');
+        Log.message('signaling.js streamDestroy id: ' + currentUser.id + ' ','',currentUser.id, '', 'sessions');
+        if (!valid) {
+            return false;
+        }
+        new Stream().load(data.stream, (err, streamObject) => {
+            if (err) {
+                result.message = err;
+                Log.message('signaling.js streamDestroy error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamDestroy error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                return Result.emit(currentUser, command, 500, result);
+            }
+            Log.message('signaling.js  streamDestroy  destroyed successfully ', '', currentUser.mappingId, '', 'debugLog');
+            Log.message('signaling.js  streamDestroy  destroyed successfully ','',currentUser.id, '', 'sessions');
+            Result.emit(currentUser, command, 200, result);
+            // Notify viewer that stream is destroyed
+            if (streamObject.viewer) {
+                Result.emit({ socket: streamObject.viewer.socket }, '/v1/stream/destroyed', 200, result);
+            }
+            streamObject.delete(err => {
+                // Notify all authorized users
+                self.streamsList(currentUser);
+            });
+        });
+    }
+
+    /*
+    * Join to the stream
+    *
+    * @param    currentUser     Object
+    * @param    data            array       Input data
+    */
+    streamJoin(currentUser, data) {
+        var self = this;
+        var command = '/v1/stream/join';
+        var result = self.makeResult(data);
+        var valid = self.validate(currentUser, command, data, ['stream', 'sdpAnswer']);
+        Log.message('signaling.js streamJoin id: ' + currentUser.id + ' joins the stream', '', currentUser.mappingId, '', 'debugLog');
+        Log.message('signaling.js streamJoin id: ' + currentUser.id + ' joins the stream','',currentUser.id, '', 'sessions');
+        if (!valid) {
+            return false;
+        }
+        new Stream().load(data.stream, (err, streamObject) => {
+            if (err) {
+                Log.message('signaling.js streamJoin error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamJoin error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                Result.emit(currentUser, command, 200, result);
+                return false;
+            }
+            streamObject.view(currentUser, err => {
+                if (err) {
+                    Log.message('signaling.js streamJoin error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                    Log.message('signaling.js streamJoin error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                    result.message = err;
+                    return Result.emit(currentUser, command, 500, result);
+                }
+                Result.emit(currentUser, command, 200, result);
+                result.sdpAnswer = data.sdpAnswer;
+                result.viewer = { id: currentUser.id, name: currentUser.name, socket: currentUser.socket };
+                Log.message('signaling.js streamJoin SUCCESS  : ' + JSON.stringify(streamObject.presenter.socket), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamJoin SUCCESS  : ' + JSON.stringify(streamObject.presenter.socket),'',currentUser.id, '', 'sessions');
+                Result.emit({ socket: streamObject.presenter.socket }, '/v1/stream/joined', 200, result);
+                // Notify all authorized users
+                self.streamsList(currentUser);
+            });
+        });
+    }
+
+    /*
+    * Stop watching the stream
+    *
+    * @param    currentUser     Object
+    * @param    database        array       Input data
+    */
+    streamLeave(currentUser, data) {
+        var self = this;
+        var command = '/v1/stream/leave';
+        var result = self.makeResult(data);
+        var valid = self.validate(currentUser, command, data, ['stream']);
+        Log.message('signaling.js streamLeave id : ' + currentUser.id + ' leave the stream. ', '', currentUser.mappingId, '', 'debugLog');
+        Log.message('signaling.js streamLeave id : ' + currentUser.id + ' leave the stream. ','',currentUser.id, '', 'sessions');
+        if (!valid) {
+            return false;
+        }
+        new Stream().load(data.stream, (err, streamObject) => {
+            if (err) {
+                Log.message('signaling.js streamLeave error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamLeave error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                Result.emit(currentUser, command, 200, result);
+                return false;
+            }
+            streamObject.leave(currentUser, err => {
+                if (err) {
+                    result.message = err;
+                    Log.message('signaling.js streamLeave error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                    Log.message('signaling.js streamLeave error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                    return Result.emit(currentUser, command, 500, result);
+                }
+                Result.emit({ socket: streamObject.presenter.socket }, '/v1/stream/leaved', 200, result);
+                Log.message('signaling.js streamLeave COMMAND : ' + command, '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamLeave COMMAND : ' + command,'',currentUser.id, '', 'sessions');
+                Result.emit(currentUser, command, 200, result);
+                // Notify all authorized users
+                streamObject.delete(() => {
+                    self.streamsList(currentUser);
+                });
+            });
+        });
+    }
+
+    /*
+    * SDP message
+    *
+    * @param    type            string      Command type: offer | answer | ice
+    * @param    currentUser     Object
+    * @param    database        array       Input data
+    */
+    sdp(type, currentUser, data) {
+        var self = this;
+        var command = '/v1/sdp/' + type;
+        var result = self.makeResult(data);
+        var valid = self.validate(currentUser, command, data, ['stream']);
+        if (!valid) {
+            return false;
+        }
+        new Stream().load(data.stream, (err, streamObject) => {
+            if (err) {
+                Log.message('signaling.js sdp error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js sdp error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                result.message = err;
+                return Result.emit(currentUser, command, 404, result);
+            }
+            switch (type) {
+                case 'ice':
+                    result.message = data.message;
+                    if (streamObject.presenter && currentUser.socket == streamObject.presenter.socket) {
+                        Result.emit({ socket: streamObject.presenter.socket }, command, 200, result);
+                        Result.emit({ socket: streamObject.viewer.socket }, '/v1/sdp/peer_ice', 200, result);
+                    } else if (streamObject.viewer && currentUser.socket == streamObject.viewer.socket) {
+                        Result.emit({ socket: streamObject.viewer.socket }, command, 200, result);
+                        Result.emit({ socket: streamObject.presenter.socket }, '/v1/sdp/peer_ice', 200, result);
+                    } else {
+                        // Somebody is missing in a call? Strange
+                        console.log('-*********************************');
+                        console.log(currentUser.id);
+                        console.log(streamObject);
+                    }
+                    break;
+            }
+        });
+    }
+
+    /*
+    * Admin: get list of streams — once
+    *
+    * @param    currentUser     Object
+    */
+    streamsList(currentUser) {
+        var self = this;
+        var command = '/v1/streams/list';
+        new Stream().getStreamList((err, response) => {
+            if (err) {
+                Log.message('signaling.js streamsList error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamsList error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                let result = { message: err };
+                return Result.emit(currentUser, command, 404, result);
+            }
+            for (let i in response.users) {
+                Result.emit({ socket: response.users[i] }, command, 200, { message: 'Ok', list: response.streams });
+            }
+        });
+    }
+
+    /*
+    * Admin: subscribe to stream list updates
+    *
+    * @param    currentUser     Object
+    */
+    streamsObserve(currentUser) {
+        var self = this;
+        var command = '/v1/streams/observe';
+        Log.message('signaling.js streamsObserve id :' + currentUser.id + ' joins and ready to view stream ', '', currentUser.mappingId, '', 'debugLog');
+        Log.message('signaling.js streamsObserve id :' + currentUser.id + ' joins and ready to view stream ','',currentUser.id, '', 'sessions');
+        new Stream().observe(currentUser, err => {
+            if (err) {
+                Log.message('signaling.js  streamsObserve error : ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js  streamsObserve error : ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                result.message = err;
+                return Result.emit(currentUser, command, 404, result);
+            }
+            Result.emit(currentUser, command, 200, { message: 'Ok' });
+            self.streamsList(currentUser);
+        });
+    }
+
+    /*
+    * Admin: stop receiving stream list updates
+    *
+    * @param    currentUser     Object
+    */
+    streamAbandon(currentUser) {
+        var self = this;
+        var command = '/v1/streams/abandon';
+        var result = self.makeResult(data);
+        Log.message('signaling.js streamAbandon  ' + currentUser.id, '', currentUser.mappingId, '', 'debugLog');
+        Log.message('signaling.js streamAbandon  ' + currentUser.id,'',currentUser.id, '', 'sessions');
+        new Stream().abandon(currentUser, err => {
+            if (err) {
+                Log.message('signaling.js streamAbandon error ' + JSON.stringify(err), '', currentUser.mappingId, '', 'debugLog');
+                Log.message('signaling.js streamAbandon error ' + JSON.stringify(err),'',currentUser.id, '', 'sessions');
+                result.message = err;
+                return Result.emit(currentUser, command, 404, result);
+            }
+            Result.emit(currentUser, command, 200, result);
+        });
+    }
+
+    /**
+    *   Alive request
+    *
+    */
+    alive(currentUser) {
+    }
+
+    /**
+    *   Parse and prepare incoming command
+    *
+    * @param    packet          array       Request params
+    * @param    currentUser     Object
+    */
+    getCommand(packet, currentUser) {
+        var self = this;
+        var command = packet[0];
+        if (!packet) {
+            Log.message('Signaling.js error empty packet ', '', currentUser.mappingId, '', 'debugLog');
+            Log.message('Signaling.js error empty packet ','',currentUser.id, '', 'sessions');
+            Log.error('Empty packet!');
+            return null;
+        }
+        if (!command) {
+            return null;
+        }
+        command = command.replace(/^\/?v1/, '').trim();
+        command = command.replace(/^\//, '').trim();
+        command = command.replace(/\/$/, '').trim();
+
+        if (command != 'alive' && command.indexOf('log/') == -1) {
+            //if (command != 'alive') {
+            if (command.toString().trim() != "alive" && command.toString().trim() != "stream/stats") {
+                Log.message('Command: ' + command, currentUser);
+            }
+        }
+        return command;
+    }
+
+    /*
+    * Validate input data and emit error if something is missing
+    *
+    * @param command    string      what command is executed
+    * @param data       array       Input data
+    * @param fields     array       List of fields to check
+    * @return           bool        If data valid or no
+    *
+    */
+    validate(currentUser, command, data, fields) {
+        for (let i in fields) {
+            var field = fields[i];
+            if (!data[field]) {
+                Result.emit(currentUser, command, 400, { 'message': 'No ' + field + ' passed' });
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /*
+    * Create a result returning object
+    *
+    * @param data       array       Input data
+    * @return           object      Prepared result object
+    *
+    */
+    makeResult(data) {
+        var result = { 'message': 'Ok' };
+        if (data.id) {
+            result.id = data.id;
+        }
+        if (data.id) {
+            result.id = data.id;
+        }
+        if (data.stream) {
+            result.stream = data.stream;
+        }
+        return result;
+    }
+    streamStats(data) {
+        var statsData = JSON.parse(data);
+        var filePath = statsData.mappingId + "/";
+        var fileName = statsData.id;
+        Log.message(data, '', fileName, filePath, 'stats');
+
+    }
+   /**
+    * Socket was screenControl
+    *
+    * @param    currentUser     Object
+    * @param    socket          string      Actual socket
+    */
+     
+   orts = Signaling;

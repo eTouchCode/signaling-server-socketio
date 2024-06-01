@@ -1,0 +1,52 @@
+{
+  "server": {
+    "port": 8890,
+    "key": "./opt/cert/vantagemdm.com.key",
+    "cert": "./opt/cert/vantagemdm.com.crt",
+    "ca": "./opt/cert/My_CA_Bundle.crt"
+  },
+  "iceServers": [
+    {
+      "urls": ["turn:p2p.vantagemdm.com:3478"],
+      "username": "test",
+      "credential": "123"
+    },
+    {
+      "urls": ["stun:p2p.vantagemdm.com:3478"],
+      "username": "test",
+      "credential": "123"
+    }
+  ],
+  "redis": {
+    "host": "localhost",
+    "port": 6379,
+    "streamList": "streamList",
+    "userList": "userList",
+    "lastUsedStreamId": "lastUsedStreamId",
+    "streamObservers": "streamObservers"
+  },
+  "logging": {
+    "dir": "logs/",
+    "ext": ".log",
+    "server": "server",
+    "error": "error",
+    "serverUrl": "https://live-server.vantagemdm.com/",
+    "debugLog": {
+      "dir": "debuglog/",
+      "ext": ".log",
+      "limit": 500
+    },
+    "stats": {
+      "dir": "stats/",
+      "ext": ".log"
+    },
+    "webServices": {
+      "debugUpload": "secure/upload/file",
+      "statsLog": "secure/bandwidth/stats"
+    }
+  },
+  "php": {
+    "serverUrl": "https://cp.vantagemdm.com",
+    "emailServicePath": "/sendSignalingEmails.php"
+  }
+}

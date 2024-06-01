@@ -1,0 +1,28 @@
+{
+  "name": "screen-sharing-signaling-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cluster": "^0.7.7",
+    "express": "^4.17.1",
+    "file-sizeof": "^1.0.4",
+    "form-data": "^3.0.0",
+    "getconfig": "^4.5.0",
+    "glob": "^7.1.6",
+    "https": "^1.0.0",
+    "node-blob": "0.0.2",
+    "node-fetch": "^2.6.0",
+    "redlock": "^4.1.0",
+    "socket.io": "3.1.0",
+    "socket.io-redis": "^6.1.1",
+    "sticky-session": "^1.1.2",
+    "xmlhttprequest": "^1.8.0"
+  }
+}
